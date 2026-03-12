@@ -250,6 +250,9 @@ impl Index {
         let mut best_interp: Option<&InterpWay> = None;
         let mut best_interp_t: f64 = 0.0;
 
+        // Fixed-size hash set on stack to skip duplicate street IDs across cells
+        let mut seen_streets: [u32; 64] = [u32::MAX; 64];
+
         for c in std::iter::once(cell).chain(neighbors.into_iter()) {
             let offsets = Self::lookup_geo_cell(&self.geo_cells, c);
 
@@ -267,6 +270,10 @@ impl Index {
 
             // Streets
             Self::for_each_entry(&self.street_entries, offsets.street, |id| {
+                let slot = (id as usize) & 0x3F;
+                if seen_streets[slot] == id { return; }
+                seen_streets[slot] = id;
+
                 let way = &all_ways[id as usize];
                 let offset = way.node_offset as usize;
                 let count = way.node_count as usize;
