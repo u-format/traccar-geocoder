@@ -8,18 +8,29 @@ find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(BZip2 REQUIRED)
 find_package(EXPAT REQUIRED)
-find_package(s2 REQUIRED)
+find_package(s2 QUIET)
 
 add_executable(build-index src/build_index.cpp)
 
-target_include_directories(build-index PRIVATE
-    /opt/homebrew/include
-)
+if(EXISTS /opt/homebrew/include)
+    target_include_directories(build-index PRIVATE /opt/homebrew/include)
+endif()
 
-target_link_libraries(build-index PRIVATE
-    s2::s2
-    ZLIB::ZLIB
-    BZip2::BZip2
-    EXPAT::EXPAT
-    Threads::Threads
-)
+if(s2_FOUND)
+    target_link_libraries(build-index PRIVATE
+        s2::s2
+        ZLIB::ZLIB
+        BZip2::BZip2
+        EXPAT::EXPAT
+        Threads::Threads
+    )
+else()
+    target_include_directories(build-index PRIVATE /usr/include/s2)
+    target_link_libraries(build-index PRIVATE
+        s2
+        ZLIB::ZLIB
+        BZip2::BZip2
+        EXPAT::EXPAT
+        Threads::Threads
+    )
+endif()

@@ -141,8 +141,15 @@ static std::vector<std::pair<S2CellId, bool>> cover_polygon(const std::vector<st
     std::vector<S2Point> points;
     points.reserve(vertices.size());
     for (const auto& [lat, lng] : vertices) {
-        points.push_back(S2LatLng::FromDegrees(lat, lng).ToPoint());
+        S2Point p = S2LatLng::FromDegrees(lat, lng).ToPoint();
+        if (!points.empty() && points.back() == p) continue;
+        points.push_back(p);
     }
+    // Remove closing duplicate if first == last
+    if (points.size() > 1 && points.front() == points.back()) {
+        points.pop_back();
+    }
+    if (points.size() < 3) return {};
 
     // Build S2Loop (must be CCW)
     auto loop = std::make_unique<S2Loop>(points);
