@@ -414,8 +414,8 @@ impl Index {
     // --- Combined query ---
 
     fn query(&self, lat: f64, lng: f64) -> Address {
-        let max_addr_dist = 0.0005; // ~50m
-        let max_street_dist = 0.005; // ~500m
+        let max_addr_dist = 0.0005 * 0.0005; // ~50m, squared
+        let max_street_dist = 0.005 * 0.005; // ~500m, squared
 
         let admin = self.find_admin(lat, lng);
 
@@ -483,7 +483,7 @@ fn haversine_approx(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     let dlat = (lat2 - lat1).to_radians();
     let dlng = (lng2 - lng1).to_radians();
     let cos_lat = ((lat1 + lat2) / 2.0).to_radians().cos();
-    (dlat * dlat + dlng * dlng * cos_lat * cos_lat).sqrt()
+    dlat * dlat + dlng * dlng * cos_lat * cos_lat
 }
 
 fn point_to_segment_with_t(
