@@ -31,7 +31,10 @@
           <input type="password" name="password" placeholder="Password" required>
           <input type="number" name="rate_per_second" placeholder="Rate/sec" value="0" min="0" required>
           <input type="number" name="rate_per_day" placeholder="Rate/day" value="0" min="0" required>
-          <label><input type="checkbox" name="rate_by_ip" value="on"> By IP</label>
+          <select name="rate_by_ip">
+            <option value="">By user</option>
+            <option value="on">By IP</option>
+          </select>
           <button type="submit">Create</button>
         </fieldset>
       </form>

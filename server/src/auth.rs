@@ -329,7 +329,7 @@ async fn create_user_handler(headers: HeaderMap, state: State<Arc<RwLock<Db>>>, 
     if let Some(login) = db.sessions.get(&session_id).cloned() {
         let is_admin = db.users.get(&login).map(|u| u.admin).unwrap_or(false);
         if is_admin && !form.login.is_empty() && !form.password.is_empty() {
-            db.create_user(&form.login, &form.password, false, form.rate_per_second, form.rate_per_day, form.rate_by_ip.is_some());
+            db.create_user(&form.login, &form.password, false, form.rate_per_second, form.rate_per_day, form.rate_by_ip.as_deref() == Some("on"));
         }
     }
     Redirect::to("/").into_response()
