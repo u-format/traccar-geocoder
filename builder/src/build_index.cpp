@@ -158,9 +158,11 @@ static std::vector<std::pair<S2CellId, bool>> cover_polygon(const std::vector<st
     }
     if (points.size() < 3) return {};
 
-    // Build S2Loop (must be CCW)
-    auto loop = std::make_unique<S2Loop>(points);
+    // Build S2Loop (must be CCW), skip invalid polygons
+    S2Error error;
+    auto loop = std::make_unique<S2Loop>(points, S2Debug::DISABLE);
     loop->Normalize();
+    if (loop->FindValidationError(&error)) return {};
 
     S2Polygon polygon(std::move(loop));
 
