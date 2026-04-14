@@ -1,7 +1,4 @@
-mod auth;
-
 use axum::extract::Query;
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -11,7 +8,7 @@ use s2::latlng::LatLng;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fs::File;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 // --- S2 helpers ---
 
@@ -698,36 +695,12 @@ fn format_address(addr: &AddressDetails<'_>) -> Option<String> {
 struct QueryParams {
     lat: f64,
     lon: f64,
-    key: Option<String>,
 }
 
 async fn reverse_geocode(
     Query(params): Query<QueryParams>,
-    state: axum::extract::State<Arc<RwLock<auth::Db>>>,
-    index: axum::extract::Extension<Arc<Index>>,
-    limiter: axum::extract::Extension<Arc<auth::RateLimiter>>,
-    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    index: axum::extract::Extension<Arc<Index>>
 ) -> Response {
-    let key = match params.key {
-        Some(k) => k,
-        None => return (StatusCode::UNAUTHORIZED, "Missing API key").into_response(),
-    };
-
-    let (login, rps, rpd, by_ip) = match state.read().unwrap().validate_token(&key) {
-        Some(info) => info,
-        None => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
-    };
-
-    let rate_key = if by_ip {
-        format!("{}:{}", login, connect_info.0.ip())
-    } else {
-        login
-    };
-
-    if let Err(msg) = auth::check_rate(&limiter, &rate_key, rps, rpd) {
-        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
-    }
-
     let address = index.query(params.lat, params.lon);
     let json = serde_json::to_string(&address).unwrap_or_default();
     ([(axum::http::header::CONTENT_TYPE, "application/json")], json).into_response()
@@ -745,9 +718,6 @@ async fn main() {
     let admin_cell_level = arg_value("--admin-level").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_ADMIN_CELL_LEVEL);
     let search_distance = arg_value("--search-distance").and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_SEARCH_DISTANCE);
 
-    let db_path = format!("{}/geocoder.json", data_dir);
-    let db = auth::Db::load(&db_path);
-
     eprintln!("Loading index from {}...", data_dir);
     let index = match Index::load(data_dir, street_cell_level, admin_cell_level, search_distance) {
         Ok(idx) => Arc::new(idx),
@@ -757,15 +727,10 @@ async fn main() {
         }
     };
 
-    let db = Arc::new(RwLock::new(db));
-    let limiter = Arc::new(auth::RateLimiter::default()); // RwLock<HashMap> with atomic counters
-
     let app = Router::new()
         .route("/reverse", get(reverse_geocode))
-        .merge(auth::router())
-        .layer(axum::Extension(index))
-        .layer(axum::Extension(limiter))
-        .with_state(db);
+        .layer(axum::Extension(index));
+
 
     // ACME mode: --domain <domain> [--cache <dir>]
     let domain_pos = args.iter().position(|a| a == "--domain");
