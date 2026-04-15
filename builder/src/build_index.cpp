@@ -341,6 +341,8 @@ static uint32_t parse_house_number(const char* s) {
 
 static uint64_t addr_count_total = 0;
 
+static const uint32_t NO_DATA = 0xFFFFFFFFu;
+
 static void add_addr_point(double lat, double lng, const char* housenumber, const char* street) {
     uint32_t addr_id = static_cast<uint32_t>(addr_points.size());
     addr_points.push_back({
@@ -364,9 +366,18 @@ static void add_addr_point(double lat, double lng, const char* housenumber, cons
 static void add_admin_polygon(const std::vector<std::pair<double,double>>& vertices,
                                const char* name, uint8_t admin_level,
                                const char* country_code) {
-    // Simplify large polygons
-    auto simplified = simplify_polygon(vertices, 500);
-    if (simplified.size() < 3) return;
+    // try simplification with increasing vertex limits until S2 accepts the polygon
+    std::vector<std::pair<double,double>> simplified;
+    std::vector<std::pair<S2CellId, bool>> cell_ids;
+
+    for (size_t max_verts : {(size_t)1500, (size_t)5000, vertices.size()}) {
+        simplified = (max_verts >= vertices.size())
+            ? vertices
+            : simplify_polygon(vertices, max_verts);
+        if (simplified.size() < 3) return;
+        cell_ids = cover_polygon(simplified);
+        if (!cell_ids.empty()) break;
+    }
 
     uint32_t poly_id = static_cast<uint32_t>(admin_polygons.size());
     uint32_t vertex_offset = static_cast<uint32_t>(admin_vertices.size());
@@ -386,8 +397,6 @@ static void add_admin_polygon(const std::vector<std::pair<double,double>>& verti
         : 0;
     admin_polygons.push_back(poly);
 
-    // S2 cell coverage (high bit marks interior cells)
-    auto cell_ids = cover_polygon(simplified);
     for (const auto& [cell_id, is_interior] : cell_ids) {
         uint32_t entry = is_interior ? (poly_id | INTERIOR_FLAG) : poly_id;
         cell_to_admin[cell_id.id()].push_back(entry);
@@ -687,8 +696,6 @@ static void deduplicate(Map& cell_map) {
 }
 
 // --- Write cell index ---
-
-static const uint32_t NO_DATA = 0xFFFFFFFFu;
 
 // Write entries file and return offset map
 static std::unordered_map<uint64_t, uint32_t> write_entries(
