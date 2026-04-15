@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 const DEFAULT_STREET_CELL_LEVEL: u64 = 17;
 const DEFAULT_ADMIN_CELL_LEVEL: u64 = 10;
+const DEFAULT_PLACE_CELL_LEVEL: u64 = 12; 
 const DEFAULT_SEARCH_DISTANCE: f64 = 75.0;
 
 fn cell_id_at_level(lat: f64, lng: f64, level: u64) -> u64 {
@@ -34,6 +35,7 @@ struct WayHeader {
     node_offset: u32,
     node_count: u8,
     name_id: u32,
+    postcode_id: u32,
 }
 
 #[repr(C)]
@@ -75,6 +77,15 @@ struct NodeCoord {
     lng: f32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PlaceFeature {
+    lat: f32,
+    lng: f32,
+    name_id: u32,
+    feature_type: u8,  // 0=postcode, 1=suburb/neighbourhood
+}
+
 // --- Index data ---
 
 struct Index {
@@ -91,9 +102,13 @@ struct Index {
     admin_entries: Mmap,
     admin_polygons: Mmap,
     admin_vertices: Mmap,
+    place_cells: Mmap,
+    place_entries: Mmap,
+    place_features: Mmap,
     strings: Mmap,
     street_cell_level: u64,
     admin_cell_level: u64,
+    place_cell_level: u64,
     max_distance_sq: f64,
 }
 
@@ -128,9 +143,13 @@ impl Index {
             admin_entries: mmap_file(&format!("{}/admin_entries.bin", dir))?,
             admin_polygons: mmap_file(&format!("{}/admin_polygons.bin", dir))?,
             admin_vertices: mmap_file(&format!("{}/admin_vertices.bin", dir))?,
+            place_cells: mmap_file(&format!("{}/place_cells.bin", dir))?,
+            place_entries: mmap_file(&format!("{}/place_entries.bin", dir))?,
+            place_features: mmap_file(&format!("{}/place_features.bin", dir))?,
             strings: mmap_file(&format!("{}/strings.bin", dir))?,
             street_cell_level,
             admin_cell_level,
+            place_cell_level: DEFAULT_PLACE_CELL_LEVEL,
             max_distance_sq,
         })
     }
@@ -443,9 +462,11 @@ impl Index {
                             ]);
                         }
                     }
+                    3 => result.region = Some(name),
                     4 => result.state = Some(name),
                     6 => result.county = Some(name),
                     8 => result.city = Some(name),
+                    9 | 10 => result.suburb = Some(name),
                     11 => result.postcode = Some(name),
                     _ => {}
                 }
@@ -455,6 +476,40 @@ impl Index {
         result
     }
 
+    // --- Place feature lookup (suburb nodes, postcode-only nodes) ---
+
+    fn query_place(&self, lat: f64, lng: f64, feature_type: u8, max_dist_sq: f64) -> Option<&str> {
+        let cell = cell_id_at_level(lat, lng, self.place_cell_level);
+        let neighbors = cell_neighbors_at_level(cell, self.place_cell_level);
+
+        let all_features: &[PlaceFeature] = unsafe {
+            std::slice::from_raw_parts(
+                self.place_features.as_ptr() as *const PlaceFeature,
+                self.place_features.len() / std::mem::size_of::<PlaceFeature>(),
+            )
+        };
+
+        let cos_lat = lat.to_radians().cos();
+        let mut best_dist = max_dist_sq;
+        let mut best_name: Option<&str> = None;
+
+        for c in std::iter::once(cell).chain(neighbors.into_iter()) {
+            let offset = Self::lookup_admin_cell(&self.place_cells, c);
+            Self::for_each_entry(&self.place_entries, offset, |id| {
+                let feat = &all_features[id as usize];
+                if feat.feature_type != feature_type { return; }
+                let dlat = (feat.lat as f64 - lat).to_radians();
+                let dlng = (feat.lng as f64 - lng).to_radians();
+                let dist = dist_sq(dlat, dlng, cos_lat);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_name = Some(self.get_string(feat.name_id));
+                }
+            });
+        }
+        best_name
+    }
+
     // --- Combined query ---
 
     fn query(&self, lat: f64, lng: f64) -> Address<'_> {
@@ -462,6 +517,12 @@ impl Index {
 
         let admin = self.find_admin(lat, lng);
         let (addr, interp, street) = self.query_geo(lat, lng);
+
+        // Place feature lookups: postcode within 500m, suburb within 3km
+        let postcode_dist_sq = (500.0_f64 / 111_320.0).powi(2);
+        let suburb_dist_sq   = (3000.0_f64 / 111_320.0).powi(2);
+        let place_postcode = self.query_place(lat, lng, 0, postcode_dist_sq);
+        let place_suburb   = self.query_place(lat, lng, 1, suburb_dist_sq);
 
         // Determine house_number and road from best geo match (priority: address > interpolation > street)
         let mut house_number: Option<Cow<'_, str>> = None;
@@ -489,6 +550,9 @@ impl Index {
             if let Some((dist, way)) = street {
                 if dist < max_dist {
                     road = Some(self.get_string(way.name_id));
+                    if addr_postcode.is_none() && way.postcode_id != NO_DATA {
+                        addr_postcode = Some(self.get_string(way.postcode_id));
+                    }
                 }
             }
         }
@@ -500,10 +564,12 @@ impl Index {
         let address = AddressDetails {
             house_number,
             road,
+            suburb: place_suburb.or(admin.suburb),
             city: admin.city,
             state: admin.state,
+            region: admin.region,
             county: admin.county,
-            postcode: admin.postcode.or(addr_postcode),
+            postcode: admin.postcode.or(addr_postcode).or(place_postcode),
             country: admin.country,
             country_code: admin.country_code.map(|c| String::from_utf8_lossy(&c).into_owned()),
         };
@@ -577,9 +643,11 @@ fn point_in_polygon(lat: f32, lng: f32, vertices: &[NodeCoord]) -> bool {
 struct AdminResult<'a> {
     country: Option<&'a str>,
     country_code: Option<[u8; 2]>,
+    region: Option<&'a str>,
     state: Option<&'a str>,
     county: Option<&'a str>,
     city: Option<&'a str>,
+    suburb: Option<&'a str>,
     postcode: Option<&'a str>,
 }
 
@@ -590,9 +658,13 @@ struct AddressDetails<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     road: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    suburb: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     city: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     county: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]

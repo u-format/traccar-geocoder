@@ -34,6 +34,7 @@ struct WayHeader {
     uint32_t node_offset;
     uint8_t node_count;
     uint32_t name_id;
+    uint32_t postcode_id;
 };
 
 struct AddrPoint {
@@ -65,6 +66,13 @@ struct AdminPolygon {
 struct NodeCoord {
     float lat;
     float lng;
+};
+
+struct PlaceFeature {
+    float lat;
+    float lng;
+    uint32_t name_id;
+    uint8_t type;  // 0=postcode, 1=suburb/neighbourhood
 };
 
 static const uint32_t INTERIOR_FLAG = 0x80000000u;
@@ -116,10 +124,15 @@ static std::vector<AdminPolygon> admin_polygons;
 static std::vector<NodeCoord> admin_vertices;
 static std::unordered_map<uint64_t, std::vector<uint32_t>> cell_to_admin;
 
+// Place features (suburb nodes, postcode-only nodes)
+static std::vector<PlaceFeature> place_features;
+static std::unordered_map<uint64_t, std::vector<uint32_t>> cell_to_places;
+
 // --- S2 helpers ---
 
 static int kStreetCellLevel = 17;
 static int kAdminCellLevel = 10;
+static int kPlaceCellLevel = 12;  // ~4km cells; center+8 neighbors covers ~12km
 
 static std::vector<S2CellId> cover_edge(double lat1, double lng1, double lat2, double lng2) {
     S2Point p1 = S2LatLng::FromDegrees(lat1, lng1).ToPoint();
@@ -142,6 +155,10 @@ static std::vector<S2CellId> cover_edge(double lat1, double lng1, double lat2, d
 
 static S2CellId point_to_cell(double lat, double lng) {
     return S2CellId(S2LatLng::FromDegrees(lat, lng)).parent(kStreetCellLevel);
+}
+
+static S2CellId point_to_place_cell(double lat, double lng) {
+    return S2CellId(S2LatLng::FromDegrees(lat, lng)).parent(kPlaceCellLevel);
 }
 
 // Returns pairs of (cell_id, is_interior)
@@ -338,6 +355,20 @@ static uint32_t parse_house_number(const char* s) {
     return n;
 }
 
+// --- Add a place feature (suburb node or postcode-only node) ---
+
+static void add_place_feature(double lat, double lng, const char* name, uint8_t type) {
+    uint32_t id = static_cast<uint32_t>(place_features.size());
+    place_features.push_back({
+        static_cast<float>(lat),
+        static_cast<float>(lng),
+        strings.intern(name),
+        type
+    });
+    S2CellId cell = point_to_place_cell(lat, lng);
+    cell_to_places[cell.id()].push_back(id);
+}
+
 // --- Add an address point ---
 
 static uint64_t addr_count_total = 0;
@@ -410,14 +441,37 @@ static void add_admin_polygon(const std::vector<std::pair<double,double>>& verti
 class BuildHandler : public osmium::handler::Handler {
 public:
     void node(const osmium::Node& node) {
-        const char* housenumber = node.tags()["addr:housenumber"];
-        if (!housenumber) return;
-        const char* street = node.tags()["addr:street"];
-        if (!street) return;
         if (!node.location().valid()) return;
+        double lat = node.location().lat();
+        double lng = node.location().lon();
 
-        const char* postcode = node.tags()["addr:postcode"];
-        add_addr_point(node.location().lat(), node.location().lon(), housenumber, street, postcode);
+        // Address node (housenumber + street)
+        const char* housenumber = node.tags()["addr:housenumber"];
+        const char* street = node.tags()["addr:street"];
+        if (housenumber && street) {
+            const char* postcode = node.tags()["addr:postcode"];
+            add_addr_point(lat, lng, housenumber, street, postcode);
+        }
+
+        // Suburb / neighbourhood nodes
+        const char* place = node.tags()["place"];
+        if (place) {
+            bool is_suburb = (std::strcmp(place, "suburb") == 0 ||
+                              std::strcmp(place, "neighbourhood") == 0 ||
+                              std::strcmp(place, "quarter") == 0 ||
+                              std::strcmp(place, "village") == 0 ||
+                              std::strcmp(place, "hamlet") == 0);
+            if (is_suburb) {
+                const char* name = node.tags()["name"];
+                if (name) add_place_feature(lat, lng, name, 1);
+            }
+        }
+
+        // Postcode-only nodes (no housenumber — avoids duplicating AddrPoint data)
+        if (!housenumber) {
+            const char* postcode = node.tags()["addr:postcode"];
+            if (postcode && *postcode) add_place_feature(lat, lng, postcode, 0);
+        }
     }
 
     void way(const osmium::Way& way) {
@@ -449,11 +503,16 @@ public:
 
     void area(const osmium::Area& area) {
         const char* boundary = area.tags()["boundary"];
-        if (!boundary) return;
+        const char* place    = area.tags()["place"];
 
-        bool is_admin = (std::strcmp(boundary, "administrative") == 0);
-        bool is_postal = (std::strcmp(boundary, "postal_code") == 0);
-        if (!is_admin && !is_postal) return;
+        bool is_admin  = boundary && (std::strcmp(boundary, "administrative") == 0);
+        bool is_postal = boundary && (std::strcmp(boundary, "postal_code") == 0);
+        bool is_suburb = place && (
+            std::strcmp(place, "suburb") == 0 ||
+            std::strcmp(place, "neighbourhood") == 0 ||
+            std::strcmp(place, "quarter") == 0
+        );
+        if (!is_admin && !is_postal && !is_suburb) return;
 
         uint8_t admin_level = 0;
         if (is_admin) {
@@ -461,12 +520,14 @@ public:
             if (!level_str) return;
             admin_level = static_cast<uint8_t>(std::atoi(level_str));
             if (admin_level < 2 || admin_level > 10) return;
+        } else if (is_postal) {
+            admin_level = 11;
         } else {
-            admin_level = 11; // use 11 for postal codes
+            admin_level = 9; // suburb/neighbourhood/quarter
         }
 
         const char* name = area.tags()["name"];
-        if (!name && is_admin) return;
+        if (!name && !is_postal) return;
 
         // For postal codes, use postal_code tag as name
         std::string name_str;
@@ -603,10 +664,14 @@ private:
             });
         }
 
+        const char* postcode = way.tags()["addr:postcode"];
+        if (!postcode) postcode = way.tags()["postal_code"];
+
         WayHeader header{};
         header.node_offset = node_offset;
         header.node_count = static_cast<uint8_t>(std::min(wnodes.size(), size_t(255)));
         header.name_id = strings.intern(name);
+        header.postcode_id = (postcode && *postcode) ? strings.intern(postcode) : NO_DATA;
         ways.push_back(header);
 
         std::unordered_set<uint64_t> way_cells;
@@ -788,6 +853,13 @@ static void write_index(const std::string& output_dir) {
     write_cell_index(output_dir + "/admin_cells.bin", output_dir + "/admin_entries.bin", cell_to_admin);
     std::cerr << "admin index: " << cell_to_admin.size() << " cells, " << admin_polygons.size() << " polygons" << std::endl;
 
+    write_cell_index(output_dir + "/place_cells.bin", output_dir + "/place_entries.bin", cell_to_places);
+    {
+        std::ofstream f(output_dir + "/place_features.bin", std::ios::binary);
+        f.write(reinterpret_cast<const char*>(place_features.data()), place_features.size() * sizeof(PlaceFeature));
+    }
+    std::cerr << "place index: " << cell_to_places.size() << " cells, " << place_features.size() << " features" << std::endl;
+
     // Street ways
     {
         std::ofstream f(output_dir + "/street_ways.bin", std::ios::binary);
@@ -856,6 +928,8 @@ int main(int argc, char* argv[]) {
             kStreetCellLevel = std::atoi(argv[++i]);
         } else if (arg == "--admin-level" && i + 1 < argc) {
             kAdminCellLevel = std::atoi(argv[++i]);
+        } else if (arg == "--place-level" && i + 1 < argc) {
+            kPlaceCellLevel = std::atoi(argv[++i]);
         } else {
             input_files.push_back(arg);
         }
