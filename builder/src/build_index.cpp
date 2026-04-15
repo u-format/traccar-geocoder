@@ -41,6 +41,7 @@ struct AddrPoint {
     float lng;
     uint32_t housenumber_id;
     uint32_t street_id;
+    uint32_t postcode_id;
 };
 
 struct InterpWay {
@@ -343,13 +344,14 @@ static uint64_t addr_count_total = 0;
 
 static const uint32_t NO_DATA = 0xFFFFFFFFu;
 
-static void add_addr_point(double lat, double lng, const char* housenumber, const char* street) {
+static void add_addr_point(double lat, double lng, const char* housenumber, const char* street, const char* postcode) {
     uint32_t addr_id = static_cast<uint32_t>(addr_points.size());
     addr_points.push_back({
         static_cast<float>(lat),
         static_cast<float>(lng),
         strings.intern(housenumber),
-        strings.intern(street)
+        strings.intern(street),
+        (postcode && *postcode) ? strings.intern(postcode) : NO_DATA
     });
 
     S2CellId cell = point_to_cell(lat, lng);
@@ -414,7 +416,8 @@ public:
         if (!street) return;
         if (!node.location().valid()) return;
 
-        add_addr_point(node.location().lat(), node.location().lon(), housenumber, street);
+        const char* postcode = node.tags()["addr:postcode"];
+        add_addr_point(node.location().lat(), node.location().lon(), housenumber, street, postcode);
     }
 
     void way(const osmium::Way& way) {
@@ -524,7 +527,8 @@ private:
         }
         if (valid == 0) return;
 
-        add_addr_point(sum_lat / valid, sum_lng / valid, housenumber, street);
+        const char* postcode = way.tags()["addr:postcode"];
+        add_addr_point(sum_lat / valid, sum_lng / valid, housenumber, street, postcode);
         building_addr_count_++;
     }
 
