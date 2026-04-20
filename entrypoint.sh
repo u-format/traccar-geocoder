@@ -25,6 +25,10 @@ build_index() {
         echo "Error: no PBF files found in $DATA_DIR/pbf/"
         exit 1
     fi
+    if [ -f "$DATA_DIR/index/geo_cells.bin" ]; then
+        echo "Index already exists, skipping build"
+        return
+    fi
     mkdir -p "$DATA_DIR/index"
     level_args=""
     [ -n "$STREET_LEVEL" ] && level_args="$level_args --street-level $STREET_LEVEL"
