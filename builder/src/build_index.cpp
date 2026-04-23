@@ -472,6 +472,26 @@ public:
             const char* postcode = node.tags()["addr:postcode"];
             if (postcode && *postcode) add_place_feature(lat, lng, postcode, 0);
         }
+
+        // named POI nodes
+        // feature_type=2 so reverse geocoder ignores them 
+        const char* poi_name = node.tags()["name"];
+        if (poi_name && *poi_name && !place) { 
+            const char* highway   = node.tags()["highway"];
+            const char* amenity   = node.tags()["amenity"];
+            const char* shop      = node.tags()["shop"];
+            const char* tourism   = node.tags()["tourism"];
+            const char* railway   = node.tags()["railway"];
+            const char* leisure   = node.tags()["leisure"];
+            const char* pub_trans = node.tags()["public_transport"];
+            const char* historic  = node.tags()["historic"];
+            const char* man_made  = node.tags()["man_made"];
+            const char* office    = node.tags()["office"];
+            const char* natural   = node.tags()["natural"];
+            bool is_poi = highway || amenity || shop || tourism || railway ||
+                          leisure || pub_trans || historic || man_made || office || natural;
+            if (is_poi) add_place_feature(lat, lng, poi_name, 2);
+        }
     }
 
     void way(const osmium::Way& way) {

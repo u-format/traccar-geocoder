@@ -12,7 +12,7 @@ WORKDIR /src
 COPY builder/ builder/
 RUN mkdir build && cd build && cmake ../builder && make -j$(nproc)
 
-# Stage 2: Build Rust server
+# Stage 2: Build Rust reverse geocoder
 FROM rust:bookworm AS builder-rust
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,6 +23,13 @@ WORKDIR /src
 COPY server/ server/
 RUN cargo build --release --manifest-path server/Cargo.toml
 
+# Stage 3: Build Rust search server
+FROM rust:bookworm AS builder-search
+
+WORKDIR /src
+COPY search/ search/
+RUN cargo build --release --manifest-path search/Cargo.toml
+
 # Stage 3: Runtime
 FROM debian:bookworm-slim
 
@@ -32,8 +39,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder-cpp /src/build/build-index /usr/local/bin/
-COPY --from=builder-rust /src/server/target/release/query-server /usr/local/bin/
+COPY --from=builder-cpp  /src/build/build-index                      /usr/local/bin/
+COPY --from=builder-rust /src/server/target/release/query-server     /usr/local/bin/
+COPY --from=builder-search /src/search/target/release/search-server  /usr/local/bin/
 COPY entrypoint.sh /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/entrypoint.sh

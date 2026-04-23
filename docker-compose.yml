@@ -8,5 +8,18 @@ services:
     volumes:
       - geocoder-data:/data
 
+  search:
+    image: traccar/traccar-geocoder
+    command: search
+    environment:
+      - DATA_DIR=/data
+      - SEARCH_BIND_ADDR=0.0.0.0:3001
+    ports:
+      - "3001:3001"
+    volumes:
+      - geocoder-data:/data
+    depends_on:
+      - geocoder
+
 volumes:
   geocoder-data:

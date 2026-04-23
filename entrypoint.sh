@@ -55,6 +55,15 @@ serve() {
     exec query-server $args
 }
 
+search() {
+    local index_ready="$DATA_DIR/index/geo_cells.bin"
+    while [ ! -f "$index_ready" ]; do
+        echo "[search] waiting for index to be ready..."
+        sleep 15
+    done
+    exec search-server "$DATA_DIR/index" "${SEARCH_BIND_ADDR:-0.0.0.0:3001}"
+}
+
 case "${1:-auto}" in
     build)
         download_pbf
@@ -62,6 +71,9 @@ case "${1:-auto}" in
         ;;
     serve)
         serve
+        ;;
+    search)
+        search
         ;;
     auto)
         download_pbf
