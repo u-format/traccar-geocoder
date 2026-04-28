@@ -221,7 +221,7 @@ impl Index {
 
     // --- Geo lookup (streets, addresses, interpolation from merged index) ---
 
-    fn query_geo(&self, lat: f64, lng: f64) -> (Option<(f64, &AddrPoint)>, Option<(f64, &str, u32)>, Option<(f64, &WayHeader)>) {
+    fn query_geo(&self, lat: f64, lng: f64) -> (Option<(f64, &AddrPoint)>, Option<(f64, &InterpWay, u32)>, Option<(f64, &WayHeader)>) {
         let cell = cell_id_at_level(lat, lng, self.street_cell_level);
         let neighbors = cell_neighbors_at_level(cell, self.street_cell_level);
 
@@ -375,7 +375,7 @@ impl Index {
                 raw.round() as u32
             };
 
-            (best_interp_dist, self.get_string(iw.street_id), number)
+            (best_interp_dist, iw, number)
         });
 
         (addr_result, interp_result, street_result)
@@ -465,30 +465,34 @@ impl Index {
         let admin = self.find_admin(lat, lng);
         let (addr, interp, street) = self.query_geo(lat, lng);
 
-        // Determine house_number and road from best geo match (priority: address > interpolation > street)
+        // Pick whichever is closer: the nearest house (address point or
+        // interpolation) or the nearest street centerline. If the centerline
+        // wins, attach a house number only when it lies on that same road.
         let mut house_number: Option<Cow<'_, str>> = None;
         let mut road: Option<&str> = None;
 
-        if let Some((dist, point)) = addr {
-            if dist < max_dist {
-                house_number = Some(Cow::Borrowed(self.get_string(point.housenumber_id)));
-                road = Some(self.get_string(point.street_id));
+        let addr = addr.filter(|(d, _)| *d < max_dist);
+        let interp = interp.filter(|(d, _, _)| *d < max_dist);
+        let street = street.filter(|(d, _)| *d < max_dist);
+
+        let house = [
+            addr.map(|(d, p)| (d, p.street_id, Cow::Borrowed(self.get_string(p.housenumber_id)))),
+            interp.map(|(d, iw, n)| (d, iw.street_id, Cow::Owned(n.to_string()))),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        if let Some((hd, hs, hn)) = house {
+            if let Some((_, way)) = street.filter(|(sd, _)| *sd < hd) {
+                road = Some(self.get_string(way.name_id));
+                if hs == way.name_id { house_number = Some(hn); }
+            } else {
+                road = Some(self.get_string(hs));
+                house_number = Some(hn);
             }
-        }
-        if road.is_none() {
-            if let Some((dist, street_name, number)) = interp {
-                if dist < max_dist {
-                    house_number = Some(Cow::Owned(number.to_string()));
-                    road = Some(street_name);
-                }
-            }
-        }
-        if road.is_none() {
-            if let Some((dist, way)) = street {
-                if dist < max_dist {
-                    road = Some(self.get_string(way.name_id));
-                }
-            }
+        } else if let Some((_, way)) = street {
+            road = Some(self.get_string(way.name_id));
         }
 
         if road.is_none() && admin.country.is_none() && admin.city.is_none() {
