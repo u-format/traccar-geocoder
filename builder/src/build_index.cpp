@@ -335,7 +335,7 @@ static std::vector<std::pair<double,double>> simplify_polygon(
 
 static const std::vector<std::string> kExcludedHighways = {
     "footway", "path", "track", "steps", "cycleway",
-    "service", "pedestrian", "bridleway", "construction"
+    "bridleway", "construction"
 };
 
 static bool is_included_highway(const char* value) {
