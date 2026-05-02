@@ -238,7 +238,7 @@ impl Index {
 
     // --- Geo lookup (streets, addresses, interpolation from merged index) ---
 
-    fn query_geo(&self, lat: f64, lng: f64) -> (Option<(f64, &AddrPoint)>, Option<(f64, &str, u32)>, Option<(f64, &WayHeader)>) {
+    fn query_geo(&self, lat: f64, lng: f64) -> (Option<(f64, &AddrPoint)>, Option<(f64, &InterpWay, u32)>, Option<(f64, &WayHeader)>) {
         let cell = cell_id_at_level(lat, lng, self.street_cell_level);
         let neighbors = cell_neighbors_at_level(cell, self.street_cell_level);
 
@@ -392,7 +392,7 @@ impl Index {
                 raw.round() as u32
             };
 
-            (best_interp_dist, self.get_string(iw.street_id), number)
+            (best_interp_dist, iw, number)
         });
 
         (addr_result, interp_result, street_result)
@@ -555,6 +555,8 @@ impl Index {
                     }
                 }
             }
+        } else if let Some((_, way)) = street {
+            road = Some(self.get_string(way.name_id));
         }
 
         if road.is_none() && admin.country.is_none() && admin.city.is_none() {

@@ -207,6 +207,26 @@ static std::vector<std::pair<S2CellId, bool>> cover_polygon(const std::vector<st
         }
     }
 
+    // Only mark a cell as interior if all its neighbors are also interior.
+    // This erodes the interior by one cell from the border, avoiding
+    // false positives from spherical/flat geometry mismatch near edges.
+    std::unordered_set<uint64_t> safe_interior;
+    for (uint64_t id : interior_set) {
+        S2CellId cell(id);
+        S2CellId neighbors[4];
+        cell.GetEdgeNeighbors(neighbors);
+        bool all_interior = true;
+        for (const auto& n : neighbors) {
+            if (interior_set.count(n.id()) == 0) {
+                all_interior = false;
+                break;
+            }
+        }
+        if (all_interior) {
+            safe_interior.insert(id);
+        }
+    }
+
     // Normalize all covering cells to kAdminCellLevel
     std::vector<std::pair<S2CellId, bool>> result;
     for (const auto& cell : covering.cell_ids()) {
@@ -214,12 +234,12 @@ static std::vector<std::pair<S2CellId, bool>> cover_polygon(const std::vector<st
             auto begin = cell.range_min().parent(kAdminCellLevel);
             auto end = cell.range_max().parent(kAdminCellLevel);
             for (auto c = begin; c != end; c = c.next()) {
-                result.emplace_back(c, interior_set.count(c.id()) > 0);
+                result.emplace_back(c, safe_interior.count(c.id()) > 0);
             }
-            result.emplace_back(end, interior_set.count(end.id()) > 0);
+            result.emplace_back(end, safe_interior.count(end.id()) > 0);
         } else {
             auto parent = cell.parent(kAdminCellLevel);
-            result.emplace_back(parent, interior_set.count(parent.id()) > 0);
+            result.emplace_back(parent, safe_interior.count(parent.id()) > 0);
         }
     }
 
@@ -333,7 +353,7 @@ static std::vector<std::pair<double,double>> simplify_polygon(
 
 static const std::vector<std::string> kExcludedHighways = {
     "footway", "path", "track", "steps", "cycleway",
-    "service", "pedestrian", "bridleway", "construction"
+    "bridleway", "construction"
 };
 
 static bool is_included_highway(const char* value) {
@@ -564,6 +584,8 @@ public:
         const char* country_code = (admin_level == 2)
             ? area.tags()["ISO3166-1:alpha2"]
             : nullptr;
+        if (admin_level == 2 && !country_code) return;
+
         // Extract outer ring vertices
         for (const auto& outer_ring : area.outer_rings()) {
             std::vector<std::pair<double,double>> vertices;
